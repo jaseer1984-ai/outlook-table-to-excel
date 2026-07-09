@@ -1,6 +1,7 @@
 import streamlit as st
 import pandas as pd
 from io import StringIO, BytesIO
+import re
 
 st.set_page_config(page_title="Payment Excel Converter", layout="wide")
 
@@ -17,11 +18,18 @@ OUTPUT_COLUMNS = [
 ]
 
 def normalize_header(col):
-    return str(col).strip().lower().replace(" ", "").replace("_", "").replace("\n", "")
+    col = str(col).strip().lower()
+    col = re.sub(r"[^a-z0-9]", "", col)
+    return col
 
 COLUMN_MAP = {
     "employeeid": "Employee ID",
+    "employeecode": "Employee ID",
+    "empid": "Employee ID",
+    "empcode": "Employee ID",
+
     "employeename": "Employee Name",
+    "employeenameenglish": "Employee Name",
     "beneficiaryname": "Employee Name",
     "beneficaryname": "Employee Name",
     "name": "Employee Name",
@@ -37,8 +45,10 @@ COLUMN_MAP = {
 
     "description": "Description",
     "remarks": "Description",
+    "remark": "Description",
 
     "branch": "Branch",
+    "location": "Branch",
 }
 
 def read_pasted_table(text):
@@ -46,7 +56,6 @@ def read_pasted_table(text):
     if not text:
         return pd.DataFrame()
 
-    # Outlook / Excel copied table normally comes with TAB separator
     try:
         df = pd.read_csv(StringIO(text), sep="\t", dtype=str)
         if df.shape[1] > 1:
@@ -54,7 +63,6 @@ def read_pasted_table(text):
     except Exception:
         pass
 
-    # comma separated fallback
     try:
         df = pd.read_csv(StringIO(text), dtype=str)
         if df.shape[1] > 1:
@@ -67,7 +75,6 @@ def read_pasted_table(text):
 def process_data(df):
     df = df.copy()
 
-    # trim and map headings
     df.columns = [str(c).strip() for c in df.columns]
 
     rename_dict = {}
@@ -77,7 +84,6 @@ def process_data(df):
 
     df = df.rename(columns=rename_dict)
 
-    # trim all cell spaces
     for col in df.columns:
         df[col] = (
             df[col]
@@ -87,10 +93,10 @@ def process_data(df):
             .str.strip()
         )
 
-    # employee name = TRIM + LEFT(35)
-    if "Employee Name" in df.columns:
-        df["Employee Name"] = df["Employee Name"].str[:35]
-    else:
+    if "Employee ID" not in df.columns:
+        df["Employee ID"] = ""
+
+    if "Employee Name" not in df.columns:
         df["Employee Name"] = ""
 
     if "IBAN Number" not in df.columns:
@@ -105,13 +111,21 @@ def process_data(df):
     if "Description" not in df.columns:
         df["Description"] = ""
 
-    # description + employee id
-    if "Employee ID" in df.columns:
-        df["Description"] = (
-            df["Description"].astype(str).str.strip()
-            + " "
-            + df["Employee ID"].astype(str).str.strip()
-        ).str.strip()
+    # TRIM + LEFT(35)
+    df["Employee Name"] = (
+        df["Employee Name"]
+        .astype(str)
+        .str.replace(r"\s+", " ", regex=True)
+        .str.strip()
+        .str[:35]
+    )
+
+    # Description + Employee ID
+    df["Description"] = (
+        df["Description"].astype(str).str.strip()
+        + " "
+        + df["Employee ID"].astype(str).str.strip()
+    ).str.strip()
 
     output_df = pd.DataFrame()
     output_df["BRANCH"] = df["Branch"]
