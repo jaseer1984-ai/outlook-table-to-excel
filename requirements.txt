@@ -1,3 +1,8 @@
 streamlit
 pandas
 openpyxl
+pillow
+streamlit-paste-button
+easyocr
+opencv-python-headless
+numpy
