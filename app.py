@@ -1,13 +1,17 @@
 import streamlit as st
 import pandas as pd
-from io import StringIO, BytesIO
+from io import BytesIO
 import re
+import easyocr
+import numpy as np
+from PIL import Image
+from streamlit_paste_button import paste_image_button
 
-st.set_page_config(page_title="Payment Excel Converter", layout="wide")
+st.set_page_config(page_title="Screenshot to Payment Excel", layout="wide")
 
-st.title("Payment Excel Converter")
+st.title("Screenshot to Payment Excel")
 
-paste_text = st.text_area("Paste copied Outlook table here", height=300)
+st.write("Take screenshot using Win + Shift + S, then click below button to paste.")
 
 OUTPUT_COLUMNS = [
     "BRANCH",
@@ -17,147 +21,107 @@ OUTPUT_COLUMNS = [
     "DESCRIPTION"
 ]
 
-def normalize_header(col):
-    col = str(col).strip().lower()
-    col = re.sub(r"[^a-z0-9]", "", col)
-    return col
+@st.cache_resource
+def load_reader():
+    return easyocr.Reader(["en"], gpu=False)
 
-COLUMN_MAP = {
-    "employeeid": "Employee ID",
-    "employeecode": "Employee ID",
-    "empid": "Employee ID",
-    "empcode": "Employee ID",
+def clean_text(x):
+    return re.sub(r"\s+", " ", str(x)).strip()
 
-    "employeename": "Employee Name",
-    "employeenameenglish": "Employee Name",
-    "beneficiaryname": "Employee Name",
-    "beneficaryname": "Employee Name",
-    "name": "Employee Name",
+def find_value(lines, possible_headers):
+    for i, line in enumerate(lines):
+        key = re.sub(r"[^a-z0-9]", "", line.lower())
+        for h in possible_headers:
+            if h in key:
+                if i + 1 < len(lines):
+                    return clean_text(lines[i + 1])
+    return ""
 
-    "swiftcode": "Swift Code",
-    "swift": "Swift Code",
+def extract_data_from_ocr(text):
+    lines = [clean_text(x) for x in text.splitlines() if clean_text(x)]
 
-    "ibannumber": "IBAN Number",
-    "iban": "IBAN Number",
-    "beneficiaryaccountnumber": "IBAN Number",
-    "beneficaryaccountnumber": "IBAN Number",
-    "accountnumber": "IBAN Number",
+    emp_id = ""
+    emp_name = ""
+    swift = ""
+    iban = ""
+    desc = ""
+    branch = ""
 
-    "description": "Description",
-    "remarks": "Description",
-    "remark": "Description",
+    for line in lines:
+        if re.search(r"\bUNI\d+\b", line.upper()):
+            emp_id = re.search(r"\bUNI\d+\b", line.upper()).group(0)
 
-    "branch": "Branch",
-    "location": "Branch",
-}
+        iban_match = re.search(r"\bSA\d{22}\b", line.replace(" ", "").upper())
+        if iban_match:
+            iban = iban_match.group(0)
 
-def read_pasted_table(text):
-    text = text.strip()
-    if not text:
-        return pd.DataFrame()
+        swift_match = re.search(r"\b[A-Z]{4}SA[A-Z0-9]{2,5}\b", line.replace(" ", "").upper())
+        if swift_match:
+            swift = swift_match.group(0)
 
-    try:
-        df = pd.read_csv(StringIO(text), sep="\t", dtype=str)
-        if df.shape[1] > 1:
-            return df.fillna("")
-    except Exception:
-        pass
+    emp_name = find_value(lines, [
+        "employeename",
+        "employeenameenglish",
+        "beneficiaryname",
+        "beneficaryname"
+    ])
 
-    try:
-        df = pd.read_csv(StringIO(text), dtype=str)
-        if df.shape[1] > 1:
-            return df.fillna("")
-    except Exception:
-        pass
+    desc = find_value(lines, [
+        "description",
+        "remarks",
+        "remark"
+    ])
 
-    return pd.DataFrame()
+    branch = find_value(lines, [
+        "branch",
+        "location"
+    ])
 
-def process_data(df):
-    df = df.copy()
+    if emp_name:
+        emp_name = emp_name[:35]
 
-    df.columns = [str(c).strip() for c in df.columns]
+    description_final = (desc + " " + emp_id).strip()
 
-    rename_dict = {}
-    for col in df.columns:
-        key = normalize_header(col)
-        rename_dict[col] = COLUMN_MAP.get(key, col)
+    return pd.DataFrame([{
+        "BRANCH": branch,
+        "BENEFICIARY NAME": emp_name,
+        "BENEFICIARY ACCOUNT NUMBER": iban,
+        "SWIFT CODE": swift,
+        "DESCRIPTION": description_final
+    }], columns=OUTPUT_COLUMNS)
 
-    df = df.rename(columns=rename_dict)
+paste_result = paste_image_button(
+    label="Paste Screenshot",
+    background_color="#1f77b4",
+    hover_background_color="#155a8a",
+    errors="ignore"
+)
 
-    for col in df.columns:
-        df[col] = (
-            df[col]
-            .fillna("")
-            .astype(str)
-            .str.replace(r"\s+", " ", regex=True)
-            .str.strip()
-        )
+if paste_result.image_data is not None:
+    st.image(paste_result.image_data, caption="Pasted Screenshot", use_container_width=True)
 
-    if "Employee ID" not in df.columns:
-        df["Employee ID"] = ""
+    with st.spinner("Reading screenshot..."):
+        reader = load_reader()
+        img = Image.open(BytesIO(paste_result.image_data)) if isinstance(paste_result.image_data, bytes) else paste_result.image_data
+        img_np = np.array(img)
+        ocr_result = reader.readtext(img_np, detail=0, paragraph=False)
+        extracted_text = "\n".join(ocr_result)
 
-    if "Employee Name" not in df.columns:
-        df["Employee Name"] = ""
+    with st.expander("OCR extracted text"):
+        st.text(extracted_text)
 
-    if "IBAN Number" not in df.columns:
-        df["IBAN Number"] = ""
+    final_df = extract_data_from_ocr(extracted_text)
 
-    if "Swift Code" not in df.columns:
-        df["Swift Code"] = ""
+    st.success("Data extracted. Please verify before download.")
+    edited_df = st.data_editor(final_df, use_container_width=True, num_rows="dynamic")
 
-    if "Branch" not in df.columns:
-        df["Branch"] = ""
+    output = BytesIO()
+    with pd.ExcelWriter(output, engine="openpyxl") as writer:
+        edited_df.to_excel(writer, index=False, sheet_name="Payment")
 
-    if "Description" not in df.columns:
-        df["Description"] = ""
-
-    # TRIM + LEFT(35)
-    df["Employee Name"] = (
-        df["Employee Name"]
-        .astype(str)
-        .str.replace(r"\s+", " ", regex=True)
-        .str.strip()
-        .str[:35]
+    st.download_button(
+        label="Download Excel",
+        data=output.getvalue(),
+        file_name="payment_output.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     )
-
-    # Description + Employee ID
-    df["Description"] = (
-        df["Description"].astype(str).str.strip()
-        + " "
-        + df["Employee ID"].astype(str).str.strip()
-    ).str.strip()
-
-    output_df = pd.DataFrame()
-    output_df["BRANCH"] = df["Branch"]
-    output_df["BENEFICIARY NAME"] = df["Employee Name"]
-    output_df["BENEFICIARY ACCOUNT NUMBER"] = df["IBAN Number"]
-    output_df["SWIFT CODE"] = df["Swift Code"]
-    output_df["DESCRIPTION"] = df["Description"]
-
-    return output_df
-
-if st.button("Convert"):
-    df = read_pasted_table(paste_text)
-
-    if df.empty:
-        st.error("Could not read table. Please copy the full Outlook table and paste again.")
-    else:
-        final_df = process_data(df)
-
-        st.success("Converted to required output model.")
-        edited_df = st.data_editor(
-            final_df,
-            use_container_width=True,
-            num_rows="dynamic"
-        )
-
-        output = BytesIO()
-        with pd.ExcelWriter(output, engine="openpyxl") as writer:
-            edited_df.to_excel(writer, index=False, sheet_name="Payment")
-
-        st.download_button(
-            label="Download Excel",
-            data=output.getvalue(),
-            file_name="payment_output.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-        )
