@@ -2,12 +2,51 @@ import streamlit as st
 import pandas as pd
 from io import StringIO, BytesIO
 
-st.set_page_config(page_title="Copy Paste Table to Excel", layout="wide")
+st.set_page_config(page_title="Payment Table Converter", layout="wide")
 
-st.title("Copy Paste Table to Excel")
+st.title("Payment Table Converter")
 
-paste_text = st.text_area("Paste copied table here", height=300)
+paste_text = st.text_area("Paste copied Outlook table here", height=300)
 
+OUTPUT_COLUMNS = [
+    "Swift Code",
+    "IBAN Number",
+    "Description",
+    "Payment Amount",
+    "Branch"
+]
+
+def normalize_header(x):
+    return str(x).strip().lower().replace(" ", "").replace("_", "")
+
+COLUMN_MAP = {
+    "employeeid": "Employee ID",
+    "employeecode": "Employee ID",
+    "empid": "Employee ID",
+
+    "employeename": "Employee Name",
+    "name": "Employee Name",
+
+    "swiftcode": "Swift Code",
+    "swift": "Swift Code",
+
+    "bank": "Bank",
+    "bankname": "Bank",
+
+    "ibannumber": "IBAN Number",
+    "iban": "IBAN Number",
+
+    "description": "Description",
+    "details": "Description",
+    "remarks": "Description",
+
+    "paymentamount": "Payment Amount",
+    "amount": "Payment Amount",
+    "payamount": "Payment Amount",
+
+    "branch": "Branch",
+    "location": "Branch"
+}
 
 def read_pasted_table(text):
     text = text.strip()
@@ -17,31 +56,34 @@ def read_pasted_table(text):
     try:
         df = pd.read_csv(StringIO(text), sep="\t", dtype=str)
         if df.shape[1] > 1:
-            df.columns = df.columns.astype(str).str.strip()
             return df.fillna("")
-    except Exception:
+    except:
         pass
 
     try:
         df = pd.read_csv(StringIO(text), dtype=str)
         if df.shape[1] > 1:
-            df.columns = df.columns.astype(str).str.strip()
             return df.fillna("")
-    except Exception:
+    except:
         pass
 
-    lines = [line.strip() for line in text.splitlines() if line.strip()]
-    rows = [line.split() for line in lines]
-    return pd.DataFrame(rows).fillna("")
+    return pd.DataFrame()
 
-
-def process_data(df):
+def clean_and_map(df):
     df = df.copy()
 
-    # Trim header spaces
-    df.columns = df.columns.astype(str).str.strip()
+    df.columns = [str(c).strip() for c in df.columns]
 
-    # Trim all cell spaces
+    new_cols = {}
+    for col in df.columns:
+        key = normalize_header(col)
+        if key in COLUMN_MAP:
+            new_cols[col] = COLUMN_MAP[key]
+        else:
+            new_cols[col] = str(col).strip()
+
+    df = df.rename(columns=new_cols)
+
     for col in df.columns:
         df[col] = (
             df[col]
@@ -51,51 +93,45 @@ def process_data(df):
             .str.strip()
         )
 
-    # Employee Name = TRIM + LEFT(35)
     if "Employee Name" in df.columns:
         df["Employee Name"] = df["Employee Name"].str[:35]
 
-    # Description = Description + space + Employee ID
-    if "Description" in df.columns and "Employee ID" in df.columns:
+    if "Description" not in df.columns:
+        df["Description"] = ""
+
+    if "Employee ID" in df.columns:
         df["Description"] = (
             df["Description"].astype(str).str.strip()
             + " "
             + df["Employee ID"].astype(str).str.strip()
         ).str.strip()
 
-    return df
+    for col in OUTPUT_COLUMNS:
+        if col not in df.columns:
+            df[col] = ""
 
+    final_df = df[OUTPUT_COLUMNS].copy()
+
+    return final_df
 
 if st.button("Convert"):
     df = read_pasted_table(paste_text)
 
     if df.empty:
-        st.error("No data found. Please paste table data.")
+        st.error("Could not read table. Please copy the full table from Outlook and paste again.")
     else:
-        final_df = process_data(df)
+        final_df = clean_and_map(df)
 
-        st.success("Table converted. Please verify before download.")
-
-        edited_df = st.data_editor(
-            final_df,
-            use_container_width=True,
-            num_rows="dynamic"
-        )
-
-        # Remove Employee ID and Bank only while saving
-        save_df = edited_df.copy()
-        save_df = save_df.drop(
-            columns=[c for c in ["Employee ID", "Bank"] if c in save_df.columns],
-            errors="ignore"
-        )
+        st.success("Converted to fixed output model.")
+        edited_df = st.data_editor(final_df, use_container_width=True, num_rows="dynamic")
 
         output = BytesIO()
         with pd.ExcelWriter(output, engine="openpyxl") as writer:
-            save_df.to_excel(writer, index=False, sheet_name="Data")
+            edited_df.to_excel(writer, index=False, sheet_name="Payment")
 
         st.download_button(
-            label="Download Excel",
-            data=output.getvalue(),
-            file_name="converted_table.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            "Download Excel",
+            output.getvalue(),
+            "payment_output.xlsx",
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
